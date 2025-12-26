@@ -28,7 +28,7 @@ def health_check():
 
 def run_flask():
     """Run Flask in background thread"""
-    port = int(os.environ.get('PORT', 10000))
+    port = int(os.environ.get('PORT', 7860))  # HF Spaces uses 7860
     app.run(host='0.0.0.0', port=port, threaded=True)
 
 # Import config
