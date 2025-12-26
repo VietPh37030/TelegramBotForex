@@ -1,0 +1,341 @@
+"""
+AI Engine v2.0 - Tích hợp Wyckoff + SMC Analysis
+Sử dụng Gemini 2.5 Pro cho phân tích chuyên sâu
+"""
+import json
+import re
+from typing import Optional, Dict
+from datetime import datetime
+
+try:
+    import google.generativeai as genai
+    GENAI_AVAILABLE = True
+except ImportError:
+    GENAI_AVAILABLE = False
+
+
+# WYCKOFF EXPERT PROMPT
+WYCKOFF_EXPERT_PROMPT = """
+🎯 BẠN LÀ CHUYÊN GIA PHÂN TÍCH WYCKOFF + SMART MONEY 
+Với 20 năm kinh nghiệm giao dịch Vàng (XAU/USD).
+
+═══════════════════════════════════════
+📊 PHƯƠNG PHÁP PHÂN TÍCH (Wyckoff Method)
+═══════════════════════════════════════
+
+1️⃣ XÁC ĐỊNH PHA HIỆN TẠI:
+   • ACCUMULATION (Tích lũy): Composite Man đang mua - Chuẩn bị tăng giá
+   • DISTRIBUTION (Phân phối): Composite Man đang bán - Chuẩn bị giảm giá  
+   • MARKUP: Xu hướng tăng
+   • MARKDOWN: Xu hướng giảm
+
+2️⃣ PHÁT HIỆN SỰ KIỆN WYCKOFF:
+   • SPRING: Phá vỡ support giả → BUY signal mạnh (Bẫy Gấu)
+   • UPTHRUST (UTAD): Phá vỡ resistance giả → SELL signal mạnh (Bẫy Bò)
+   • SOS (Sign of Strength): Nến tăng mạnh + volume cao → Phe mua kiểm soát
+   • SOW (Sign of Weakness): Nến giảm mạnh + volume cao → Phe bán kiểm soát
+   • LPS (Last Point of Support): Điểm vào lệnh BUY an toàn nhất
+   • LPSY (Last Point of Supply): Điểm vào lệnh SELL an toàn nhất
+
+3️⃣ VOLUME SPREAD ANALYSIS (VSA):
+   • EFFORT (Volume cao) + RESULT nhỏ (Spread hẹp) = ABSORPTION (Hấp thụ) → Đảo chiều sắp tới
+   • EFFORT thấp + RESULT lớn = Easy Movement → Xu hướng tiếp diễn
+
+4️⃣ SMART MONEY CONCEPTS (SMC):
+   • FVG (Fair Value Gap): Vùng mất cân bằng cung cầu
+   • Order Block: Vùng lệnh của tổ chức lớn
+   • Liquidity Sweep: Quét stop loss trước khi đảo chiều
+
+═══════════════════════════════════════
+⚠️ QUY TẮC VÀNG (QUAN TRỌNG!)
+═══════════════════════════════════════
+
+❌ KHÔNG bao giờ giao dịch ở lần phá vỡ ĐẦU TIÊN
+✅ LUÔN chờ TEST hoặc LPS/LPSY để vào lệnh an toàn
+❌ KHÔNG spam lệnh - Chỉ gửi tín hiệu khi Confidence >= 70%
+✅ Nếu không chắc chắn → Trả về WAIT
+
+═══════════════════════════════════════
+📋 FORMAT TRẢ VỀ (JSON ONLY)
+═══════════════════════════════════════
+
+```json
+{
+    "action": "BUY" | "SELL" | "WAIT",
+    "wyckoff_phase": "ACCUMULATION | DISTRIBUTION | MARKUP | MARKDOWN",
+    "event_detected": "SPRING | UPTHRUST | SOS | SOW | LPS | LPSY | NONE",
+    "smc_trigger": "FVG | ORDER_BLOCK | LIQUIDITY_SWEEP | NONE",
+    "entry": <giá vào lệnh>,
+    "stoploss": <giá cắt lỗ>,
+    "takeprofit": <giá chốt lời>,
+    "confidence": <0-100>,
+    "reason": "<lý do ngắn gọn bằng TIẾNG VIỆT>"
+}
+```
+
+⚠️ NHỚ: 
+- Confidence < 70 → PHẢI trả về action: "WAIT"
+- Nếu không phát hiện event → event_detected: "NONE"
+- Reason phải bằng TIẾNG VIỆT, ngắn gọn, dễ hiểu
+"""
+
+
+class WyckoffAIEngine:
+    """
+    AI Engine v2.0 với Wyckoff + SMC expertise
+    Sử dụng Gemini 2.5 Pro
+    """
+    
+    def __init__(self, api_key: str, model_name: str = "gemini-2.5-pro"):
+        """
+        Args:
+            api_key: Google API Key
+            model_name: gemini-2.5-pro (mạnh nhất), gemini-2.5-flash (nhanh hơn)
+        """
+        self.api_key = api_key
+        self.model_name = model_name
+        self.model = None
+        
+        if GENAI_AVAILABLE and api_key:
+            try:
+                genai.configure(api_key=api_key)
+                self.model = genai.GenerativeModel(model_name)
+                print(f"✅ Wyckoff AI Engine initialized with {model_name}")
+            except Exception as e:
+                print(f"❌ Failed to initialize AI: {e}")
+    
+    def analyze(self, 
+                market_data: str, 
+                indicators: Dict,
+                wyckoff_analysis: Dict = None,
+                smc_analysis: Dict = None,
+                news_context: str = None) -> Dict:
+        """
+        Phân tích thị trường với Wyckoff + SMC
+        
+        Args:
+            market_data: Dữ liệu giá đã format
+            indicators: Dict chỉ báo kỹ thuật
+            wyckoff_analysis: Kết quả từ WyckoffAnalyzer
+            smc_analysis: Kết quả từ SMCAnalyzer
+            news_context: Bối cảnh tin tức
+            
+        Returns:
+            Dict với action, entry, sl, tp, confidence, reason
+        """
+        if not self.model:
+            return self._get_demo_signal()
+        
+        # Build comprehensive prompt
+        full_prompt = self._build_prompt(
+            market_data, indicators, wyckoff_analysis, smc_analysis, news_context
+        )
+        
+        try:
+            response = self.model.generate_content(full_prompt)
+            return self._parse_response(response.text)
+        except Exception as e:
+            print(f"❌ AI Analysis error: {e}")
+            return self._get_wait_signal(f"Lỗi AI: {str(e)[:50]}")
+    
+    def _build_prompt(self, market_data: str, indicators: Dict,
+                      wyckoff: Dict = None, smc: Dict = None, 
+                      news: str = None) -> str:
+        """Xây dựng prompt đầy đủ"""
+        
+        sections = [WYCKOFF_EXPERT_PROMPT]
+        
+        sections.append(f"""
+═══════════════════════════════════════
+📊 DỮ LIỆU THỊ TRƯỜNG HIỆN TẠI
+═══════════════════════════════════════
+{market_data}
+""")
+        
+        # Technical indicators
+        indicators_str = "\n".join([f"   • {k}: {v}" for k, v in indicators.items()])
+        sections.append(f"""
+═══════════════════════════════════════
+📈 CHỈ BÁO KỸ THUẬT
+═══════════════════════════════════════
+{indicators_str}
+""")
+        
+        # Wyckoff analysis
+        if wyckoff:
+            sections.append(f"""
+═══════════════════════════════════════
+🔮 PHÂN TÍCH WYCKOFF (Pre-computed)
+═══════════════════════════════════════
+   • Phase: {wyckoff.get('phase', 'N/A')}
+   • Events: {[e.event_type for e in wyckoff.get('events', [])]}
+   • VSA Signal: {wyckoff.get('vsa', {}).get('signal', 'N/A')}
+""")
+        
+        # SMC analysis
+        if smc:
+            sections.append(f"""
+═══════════════════════════════════════
+🎯 PHÂN TÍCH SMC (Pre-computed)
+═══════════════════════════════════════
+   • Structure: {smc.get('structure', {}).get('trend', 'N/A')}
+   • FVGs: {len(smc.get('fvgs', []))} active
+   • Order Blocks: {len(smc.get('order_blocks', []))} active
+   • Sweep: {smc.get('sweep', {}).get('type', 'None') if smc.get('sweep') else 'None'}
+""")
+        
+        # News context
+        if news:
+            sections.append(f"""
+═══════════════════════════════════════
+📰 BỐI CẢNH TIN TỨC
+═══════════════════════════════════════
+{news}
+""")
+        
+        sections.append("""
+═══════════════════════════════════════
+🎯 YÊU CẦU
+═══════════════════════════════════════
+Dựa trên tất cả dữ liệu trên, hãy phân tích và đưa ra quyết định giao dịch.
+Trả về KẾT QUẢ theo format JSON đã định nghĩa.
+NHỚ: Confidence < 70 → action PHẢI là "WAIT"
+""")
+        
+        return "\n".join(sections)
+    
+    def _parse_response(self, response_text: str) -> Dict:
+        """Parse response từ AI"""
+        try:
+            # Find JSON in response
+            json_match = re.search(r'\{[^{}]*\}', response_text, re.DOTALL)
+            
+            if json_match:
+                result = json.loads(json_match.group())
+                
+                # Validate and normalize
+                action = result.get('action', 'WAIT').upper()
+                confidence = result.get('confidence', 0)
+                
+                # Enforce confidence rule
+                if confidence < 70:
+                    action = 'WAIT'
+                
+                return {
+                    'action': action,
+                    'wyckoff_phase': result.get('wyckoff_phase', 'UNKNOWN'),
+                    'event_detected': result.get('event_detected', 'NONE'),
+                    'smc_trigger': result.get('smc_trigger', 'NONE'),
+                    'entry': result.get('entry'),
+                    'stoploss': result.get('stoploss'),
+                    'takeprofit': result.get('takeprofit'),
+                    'confidence': confidence,
+                    'reason': result.get('reason', 'Không có lý do cụ thể')
+                }
+            
+            return self._get_wait_signal("Không parse được JSON từ AI")
+            
+        except json.JSONDecodeError:
+            return self._get_wait_signal("Lỗi parse JSON")
+    
+    def _get_wait_signal(self, reason: str) -> Dict:
+        """Trả về tín hiệu WAIT"""
+        return {
+            'action': 'WAIT',
+            'wyckoff_phase': 'UNKNOWN',
+            'event_detected': 'NONE',
+            'smc_trigger': 'NONE',
+            'entry': None,
+            'stoploss': None,
+            'takeprofit': None,
+            'confidence': 0,
+            'reason': reason
+        }
+    
+    def _get_demo_signal(self) -> Dict:
+        """Demo signal khi không có API"""
+        import random
+        
+        if random.random() < 0.6:  # 60% WAIT
+            return self._get_wait_signal("Demo mode: Không có tín hiệu rõ ràng")
+        
+        action = random.choice(['BUY', 'SELL'])
+        base_price = 2620.0
+        
+        if action == 'BUY':
+            return {
+                'action': 'BUY',
+                'wyckoff_phase': 'ACCUMULATION',
+                'event_detected': 'SPRING',
+                'smc_trigger': 'LIQUIDITY_SWEEP',
+                'entry': base_price,
+                'stoploss': base_price - 8,
+                'takeprofit': base_price + 15,
+                'confidence': random.randint(72, 88),
+                'reason': 'Demo: Phát hiện Spring tại vùng hỗ trợ + Liquidity sweep'
+            }
+        else:
+            return {
+                'action': 'SELL',
+                'wyckoff_phase': 'DISTRIBUTION',
+                'event_detected': 'UPTHRUST',
+                'smc_trigger': 'ORDER_BLOCK',
+                'entry': base_price,
+                'stoploss': base_price + 8,
+                'takeprofit': base_price - 15,
+                'confidence': random.randint(72, 88),
+                'reason': 'Demo: Phát hiện Upthrust tại Order Block bearish'
+            }
+    
+    def translate_to_vietnamese(self, text: str) -> str:
+        """Dịch text sang tiếng Việt"""
+        if not self.model:
+            return text
+        
+        try:
+            prompt = f"Dịch đoạn text sau sang tiếng Việt một cách tự nhiên:\n{text}"
+            response = self.model.generate_content(prompt)
+            return response.text.strip()
+        except:
+            return text
+
+
+# Backwards compatibility alias
+AIAnalyst = WyckoffAIEngine
+
+
+# Quick test
+if __name__ == "__main__":
+    import os
+    from dotenv import load_dotenv
+    
+    load_dotenv()
+    api_key = os.getenv("GOOGLE_API_KEY")
+    
+    engine = WyckoffAIEngine(api_key)
+    
+    test_data = """
+    📊 DỮ LIỆU NẾN:
+    Time | Close
+    10:00 | 2618.50
+    10:15 | 2615.20
+    10:30 | 2612.00 (Low - phá support)
+    10:45 | 2619.80 (Recovery - nến xanh lớn)
+    """
+    
+    test_indicators = {
+        'RSI': 42,
+        'Trend': 'SIDEWAYS',
+        'MACD': 'Bullish crossover'
+    }
+    
+    test_wyckoff = {
+        'phase': 'ACCUMULATION',
+        'events': [],
+        'vsa': {'signal': 'ABSORPTION_SUPPORT'}
+    }
+    
+    result = engine.analyze(test_data, test_indicators, test_wyckoff)
+    print("\n🤖 AI Analysis Result:")
+    for k, v in result.items():
+        print(f"   {k}: {v}")
