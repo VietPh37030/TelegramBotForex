@@ -184,12 +184,33 @@ class WyckoffBot:
             if should_pause and upcoming_news:
                 news_context = f"⚠️ CẢNH BÁO: Tin quan trọng sắp ra - {upcoming_news.event}"
             
-            # 8. Prepare market data for AI
+            # 8. Get historical context from Firebase
+            history_context = ""
+            if self.firebase:
+                try:
+                    history = self.firebase.get_trade_history(limit=5)
+                    if history:
+                        history_lines = ["📊 LỊCH SỬ PHÂN TÍCH GẦN NHẤT:"]
+                        for h in history:
+                            history_lines.append(
+                                f"- {h.get('timestamp', 'N/A')[:16]}: {h.get('action', 'N/A')} "
+                                f"({h.get('confidence', 0)}%) - Phase: {h.get('wyckoff_phase', 'N/A')}, "
+                                f"Event: {h.get('event_detected', 'NONE')}"
+                            )
+                        history_context = "\n".join(history_lines)
+                except:
+                    pass
+            
+            # 9. Prepare market data for AI
             market_data = self.fetcher.format_for_ai(df)
             full_context = f"{market_data}\n\n{pattern_text}"
             
-            # 9. AI Analysis
-            print("🤖 AI analyzing...")
+            # Add history context if available
+            if history_context:
+                full_context = f"{full_context}\n\n{history_context}\n\n⚠️ LƯU Ý: Hãy xem xét lịch sử phân tích để đảm bảo tính nhất quán. Nếu xu hướng không thay đổi đáng kể, nên giữ nguyên nhận định trước đó."
+            
+            # 10. AI Analysis
+            print("   🤖 AI đang phân tích...")
             signal = self.ai.analyze(
                 market_data=full_context,
                 indicators=indicators,
@@ -374,6 +395,12 @@ class WyckoffBot:
                     print("\n📤 Đang gửi kết quả về Telegram...")
                     self.telegram.send_analysis_result(signal, current_price)
                     print("✅ Đã gửi về Telegram!")
+                    
+                    # Save to Firebase history
+                    if self.firebase:
+                        print("💾 Lưu vào Firebase...")
+                        self.firebase.save_signal(signal)
+                        print("✅ Đã lưu lịch sử!")
                     
                     # If BUY/SELL with high confidence, also send full signal
                     if action in ['BUY', 'SELL'] and confidence >= 50:

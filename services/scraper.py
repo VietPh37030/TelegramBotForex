@@ -78,44 +78,25 @@ class RealtimeGoldScraper:
     
     def get_realtime_price(self) -> Dict:
         """
-        Lấy giá realtime - Production ready for Server
-        Priority: TradingView > Yahoo Finance
+        Lấy giá realtime - TradingView ONLY (faster)
         
         Returns:
             Dict với price, open, high, low, change, timestamp, source
         """
-        # Try TradingView first (best for forex)
+        # TradingView ONLY for speed
         try:
             result = self._get_from_tradingview()
             if result and result.get('price'):
                 self._update_history(result)
                 return result
         except Exception as e:
-            pass  # Silent fail, try next
-        
-        # Fallback to Yahoo Finance
-        try:
-            result = self._get_from_yahoo_fast()
-            if result and result.get('price'):
-                self._update_history(result)
-                return result
-        except:
-            pass
-        
-        # Last resort: Yahoo info
-        try:
-            result = self._get_from_yahoo_info()
-            if result and result.get('price'):
-                self._update_history(result)
-                return result
-        except:
             pass
         
         # Return cached if available
         if self.last_price:
             return {**self.last_price, 'warning': 'Using cached price'}
         
-        return {'price': None, 'error': 'All sources failed'}
+        return {'price': None, 'error': 'TradingView failed'}
     
     def _get_from_tradingview(self) -> Dict:
         """
@@ -382,7 +363,7 @@ class RealtimeGoldScraper:
     
     def get_candles(self, n_bars: int = 30, interval: str = '15m') -> pd.DataFrame:
         """
-        Lấy dữ liệu nến từ Yahoo Finance
+        Lấy dữ liệu nến từ Yahoo Finance (silent - không log lỗi)
         
         Args:
             n_bars: Số nến cần lấy
@@ -411,8 +392,8 @@ class RealtimeGoldScraper:
                     df = df[['open', 'high', 'low', 'close', 'volume']]
                     return df.tail(n_bars)
                     
-            except Exception as e:
-                print(f"⚠️ Yahoo candles error: {e}")
+            except:
+                pass  # Silent fail
         
         # Fallback to local history or demo
         return self._build_candles_from_history(n_bars)

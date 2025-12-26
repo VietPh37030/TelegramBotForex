@@ -75,29 +75,147 @@ class NewsCrawler:
     def get_economic_calendar(self) -> List[NewsEvent]:
         """
         Lấy lịch kinh tế hôm nay
-        Priority: ForexFactory JSON > Investing.com
-        Không dùng mock data - chỉ tin thật
+        Priority: NASDAQ API > CafeF (no more ForexFactory)
         """
         events = []
         
-        # Try ForexFactory JSON first
+        # Try NASDAQ first (US Economic Calendar - reliable)
         try:
-            events = self._crawl_forexfactory()
+            events = self._crawl_nasdaq()
             if events:
+                print(f"✅ NASDAQ: {len(events)} events loaded")
                 return events
         except Exception as e:
             pass  # Silent fail
         
-        # Fallback to Investing.com
+        # Fallback to CafeF 
         try:
-            events = self._crawl_investing_calendar()
+            events = self._crawl_cafef()
             if events:
+                print(f"✅ CafeF: {len(events)} events loaded")
                 return events
         except Exception as e:
             pass  # Silent fail
         
-        # Return empty - NO MOCK DATA
+        # Return empty if all fail
         return []
+    
+    def _crawl_nasdaq(self) -> List[NewsEvent]:
+        """
+        Lấy lịch kinh tế từ NASDAQ API (Reliable, no rate limit)
+        """
+        url = "https://api.nasdaq.com/api/calendar/economicevents"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept-Language': 'en-US,en;q=0.9'
+        }
+        
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        params = {'date': today_str}
+        
+        response = self.session.get(url, headers=headers, params=params, timeout=10, verify=False)
+        
+        if response.status_code != 200:
+            raise Exception(f"HTTP {response.status_code}")
+        
+        data = response.json()
+        rows = data.get('data', {}).get('calendar', {}).get('rows', [])
+        
+        events = []
+        
+        # Dictionary to translate NASDAQ events to Vietnamese
+        translate_dict = {
+            "GDP": "GDP (Tổng sản phẩm quốc nội)",
+            "CPI": "CPI (Lạm phát)",
+            "PPI": "PPI (Chỉ số sản xuất)",
+            "Nonfarm Payrolls": "Bảng lương Non-Farm",
+            "Unemployment Rate": "Tỷ lệ Thất nghiệp",
+            "Fed Interest Rate": "Lãi suất Fed",
+            "FOMC": "Biên bản họp FOMC",
+            "Initial Jobless Claims": "Đơn xin trợ cấp thất nghiệp",
+            "Retail Sales": "Doanh số Bán lẻ",
+            "Crude Oil": "Dự trữ Dầu thô",
+            "Consumer Confidence": "Niềm tin Tiêu dùng"
+        }
+        
+        for item in rows:
+            # Only US events
+            if item.get('country') != 'United States':
+                continue
+            
+            name = item.get('eventTitle', '')
+            time_str = item.get('time', '00:00')
+            actual = item.get('actual', '')
+            forecast = item.get('consensus', '')
+            
+            # Check if important
+            is_important = any(key in name for key in translate_dict.keys())
+            
+            if is_important:
+                # Translate to Vietnamese
+                vn_name = name
+                for en, vn in translate_dict.items():
+                    if en in name:
+                        vn_name = vn
+                        break
+                
+                events.append(NewsEvent(
+                    time=time_str,
+                    currency='USD',
+                    impact='HIGH',
+                    event=name,
+                    title_vi=vn_name,
+                    forecast=forecast,
+                    previous=actual
+                ))
+        
+        return events
+    
+    def _crawl_cafef(self) -> List[NewsEvent]:
+        """
+        Lấy tin tức từ CafeF (Vietnamese financial news)
+        Fallback khi NASDAQ không có data
+        """
+        from bs4 import BeautifulSoup
+        
+        url = "https://cafef.vn/tai-chinh-quoc-te.chn"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = self.session.get(url, headers=headers, timeout=10, verify=False)
+        
+        if response.status_code != 200:
+            raise Exception(f"HTTP {response.status_code}")
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        articles = soup.find_all('h3', limit=15)
+        
+        events = []
+        keywords = ["Vàng", "USD", "Fed", "Lãi suất", "Lạm phát", "Chứng khoán", "Gold"]
+        
+        current_time = datetime.now().strftime("%H:%M")
+        
+        for article in articles:
+            text = article.text.strip()
+            
+            if any(k.lower() in text.lower() for k in keywords):
+                events.append(NewsEvent(
+                    time=current_time,
+                    currency='USD',
+                    impact='MEDIUM',
+                    event=text[:100],  # Truncate to 100 chars
+                    title_vi=text[:100],
+                    forecast='',
+                    previous=''
+                ))
+                
+                if len(events) >= 5:  # Max 5 events
+                    break
+        
+        return events
     
     def _crawl_forexfactory(self) -> List[NewsEvent]:
         """
