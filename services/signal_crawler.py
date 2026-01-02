@@ -82,7 +82,7 @@ class SignalCrawler:
         return all_signals
     
     def _crawl_channel(self, channel: str) -> List[TradingSignal]:
-        """Crawl một kênh Telegram cụ thể"""
+        """Crawl một kênh Telegram cụ thể - Chỉ lấy tin HÔM NAY"""
         url = f"https://t.me/s/{channel}"
         
         try:
@@ -94,12 +94,32 @@ class SignalCrawler:
                 return []
             
             soup = BeautifulSoup(response.text, 'html.parser')
-            # Lấy cả widget message để có thể lấy ảnh
+            # Lấy cả widget message để có thể lấy ảnh và datetime
             message_widgets = soup.find_all('div', class_='tgme_widget_message')
             
             signals = []
+            today = datetime.now().strftime("%Y-%m-%d")
             
             for widget in message_widgets[-30:]:  # 30 tin mới nhất
+                # Lấy thời gian tin nhắn
+                time_elem = widget.find('time', class_='time')
+                msg_datetime = None
+                msg_time_str = datetime.now().strftime("%H:%M %d/%m/%Y")
+                
+                if time_elem and time_elem.get('datetime'):
+                    try:
+                        # Parse datetime từ Telegram (format: 2026-01-02T10:30:00+00:00)
+                        dt_str = time_elem.get('datetime')
+                        msg_datetime = datetime.fromisoformat(dt_str.replace('Z', '+00:00'))
+                        msg_date = msg_datetime.strftime("%Y-%m-%d")
+                        msg_time_str = msg_datetime.strftime("%H:%M %d/%m/%Y")
+                        
+                        # CHỈ LẤY TIN HÔM NAY
+                        if msg_date != today:
+                            continue
+                    except:
+                        pass
+                
                 # Lấy text
                 text_div = widget.find('div', class_='tgme_widget_message_text')
                 if not text_div:
@@ -112,11 +132,11 @@ class SignalCrawler:
                 if photo_wrap:
                     style = photo_wrap.get('style', '')
                     # Extract URL from style="background-image:url('...')"
-                    img_match = re.search(r"url\(['"]?([^'"\)]+)['"]?\)", style)
+                    img_match = re.search(r"url\(([^)]+)\)", style)
                     if img_match:
-                        image_url = img_match.group(1)
+                        image_url = img_match.group(1).strip("'\"")
                 
-                signal = self._parse_signal(text, channel, image_url)
+                signal = self._parse_signal(text, channel, image_url, msg_time_str)
                 if signal:
                     signals.append(signal)
             
@@ -125,7 +145,7 @@ class SignalCrawler:
         except Exception as e:
             return []
     
-    def _parse_signal(self, text: str, source: str, image_url: str = '') -> Optional[TradingSignal]:
+    def _parse_signal(self, text: str, source: str, image_url: str = '', msg_time_str: str = '') -> Optional[TradingSignal]:
         """Parse tin nhắn để tìm tín hiệu trading"""
         text_lower = text.lower()
         
@@ -171,9 +191,12 @@ class SignalCrawler:
         if not tp:
             tp = entry + 30 if action == 'BUY' else entry - 30
         
+        # Sử dụng thời gian từ message, nếu không có thì dùng now
+        timestamp = msg_time_str if msg_time_str else datetime.now().strftime("%H:%M %d/%m/%Y")
+        
         return TradingSignal(
             source=source,
-            timestamp=datetime.now().isoformat(),
+            timestamp=timestamp,
             symbol=symbol,
             action=action,
             entry=entry,
