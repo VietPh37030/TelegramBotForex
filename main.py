@@ -209,15 +209,29 @@ class WyckoffBot:
             if history_context:
                 full_context = f"{full_context}\n\n{history_context}\n\n⚠️ LƯU Ý: Hãy xem xét lịch sử phân tích để đảm bảo tính nhất quán. Nếu xu hướng không thay đổi đáng kể, nên giữ nguyên nhận định trước đó."
             
-            # 10. AI Analysis
+            # 10. AI Analysis (trong thread riêng để không block khi CPU throttle)
             print("   🤖 AI đang phân tích...")
-            signal = self.ai.analyze(
-                market_data=full_context,
-                indicators=indicators,
-                wyckoff_analysis=wyckoff_result,
-                smc_analysis=smc_result,
-                news_context=news_context
-            )
+            
+            # Wrapper để chạy AI trong thread riêng (fix Replit CPU throttle)
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+            import functools
+            
+            def run_ai_analysis():
+                return self.ai.analyze(
+                    market_data=full_context,
+                    indicators=indicators,
+                    wyckoff_analysis=wyckoff_result,
+                    smc_analysis=smc_result,
+                    news_context=news_context
+                )
+            
+            try:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(run_ai_analysis)
+                    signal = future.result(timeout=120)  # 2 phút timeout
+            except FuturesTimeoutError:
+                print("⚠️ AI timeout - trả về WAIT")
+                signal = {'action': 'WAIT', 'confidence': 0, 'reason': 'AI timeout'}
             
             # 10. Add lot size calculation
             if signal.get('action') != 'WAIT':

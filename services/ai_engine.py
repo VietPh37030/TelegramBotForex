@@ -4,14 +4,20 @@ Sử dụng Gemini 2.5 Pro cho phân tích chuyên sâu
 """
 import json
 import re
+import asyncio
+import functools
 from typing import Optional, Dict
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 try:
     import google.generativeai as genai
     GENAI_AVAILABLE = True
 except ImportError:
     GENAI_AVAILABLE = False
+
+# Thread pool for running sync functions in background
+_executor = ThreadPoolExecutor(max_workers=2)
 
 
 # WYCKOFF EXPERT PROMPT
@@ -137,6 +143,32 @@ class WyckoffAIEngine:
         except Exception as e:
             print(f"❌ AI Analysis error: {e}")
             return self._get_wait_signal(f"Lỗi AI: {str(e)[:50]}")
+    
+    async def analyze_async(self, 
+                market_data: str, 
+                indicators: Dict,
+                wyckoff_analysis: Dict = None,
+                smc_analysis: Dict = None,
+                news_context: str = None) -> Dict:
+        """
+        Async version - Chạy AI trong thread riêng để không block bot
+        Dùng cho Replit FREE tier khi CPU bị throttle
+        """
+        loop = asyncio.get_running_loop()
+        
+        # Đẩy việc nặng sang thread khác
+        result = await loop.run_in_executor(
+            _executor,
+            functools.partial(
+                self.analyze,
+                market_data=market_data,
+                indicators=indicators,
+                wyckoff_analysis=wyckoff_analysis,
+                smc_analysis=smc_analysis,
+                news_context=news_context
+            )
+        )
+        return result
     
     def _build_prompt(self, market_data: str, indicators: Dict,
                       wyckoff: Dict = None, smc: Dict = None, 
