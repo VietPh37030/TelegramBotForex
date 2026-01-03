@@ -35,7 +35,8 @@ def run_flask():
 from config import (
     GEMINI_API_KEY, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
     FIREBASE_CONFIG, SYMBOL, TIMEFRAME, N_CANDLES,
-    USER_CAPITAL, RISK_PERCENT, LOOP_INTERVAL, ERROR_RETRY_INTERVAL
+    USER_CAPITAL, RISK_PERCENT, 
+    LOOP_INTERVAL, SIGNAL_CHECK_INTERVAL, NEWS_CHECK_INTERVAL, ERROR_RETRY_INTERVAL
 )
 
 # Import services
@@ -651,6 +652,121 @@ class WyckoffBot:
             return f"❌ Lỗi lấy tin tức: {str(e)[:50]}"
     
     def run_analysis_loop(self):
+        """Vòng lặp phân tích chính - Optimized for real-time signals"""
+        loop_count = 0
+        last_market_analysis = datetime.now()
+        
+        while True:
+            loop_count += 1
+            current_time = datetime.now()
+            
+            print(f"\n{'='*60}")
+            print(f"🔄 LOOP #{loop_count} | {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"{'='*60}")
+            
+            # Check if paused
+            if self.telegram.is_paused:
+                print("⏸️ Bot is PAUSED. Use /stop to resume.")
+                time.sleep(SIGNAL_CHECK_INTERVAL)
+                continue
+            
+            try:
+                # Check daily limit
+                can_trade, limit_msg = self.risk_mgr.check_daily_limit()
+                if not can_trade:
+                    print(limit_msg)
+                    self.telegram.send_alert(limit_msg, "WARNING")
+                    time.sleep(SIGNAL_CHECK_INTERVAL)
+                    continue
+                
+                # 🚨 NEWS ALERT - Always check for upcoming important news
+                should_pause, upcoming_news = self.news.should_pause_trading(minutes_before=15)
+                if should_pause and upcoming_news:
+                    try:
+                        event_time = datetime.strptime(upcoming_news.time, "%H:%M").replace(
+                            year=datetime.now().year,
+                            month=datetime.now().month,
+                            day=datetime.now().day
+                        )
+                        minutes_until = int((event_time - datetime.now()).total_seconds() / 60)
+                        
+                        if minutes_until > 0:
+                            self.telegram.send_news_alert(upcoming_news, minutes_until)
+                    except:
+                        pass
+                
+                # ⚡ FAST: Check signals from Telegram channels (every 2 minutes)
+                print("\n📡 Checking signals from Telegram channels...")
+                new_signals = self.check_external_signals()
+                if new_signals > 0:
+                    print(f"✅ Found {new_signals} new signals!")
+                else:
+                    print("📭 No new signals")
+                
+                # 📰 Check news updates (every loop = every 2 min)
+                news_count = self.check_news_updates()
+                if news_count > 0:
+                    print(f"📰 {news_count} new important news detected!")
+                
+                # 🐢 SLOW: Market analysis (only every 1 hour)
+                time_since_analysis = (current_time - last_market_analysis).total_seconds()
+                if time_since_analysis >= LOOP_INTERVAL:
+                    print("\n🎯 Performing FULL market analysis...")
+                    
+                    # Get market data
+                    df = self.fetcher.get_candles(n_bars=30, interval='15m')
+                    if df is None or df.empty:
+                        print("❌ Cannot get market data")
+                        time.sleep(SIGNAL_CHECK_INTERVAL)
+                        continue
+                    
+                    current_price = df['close'].iloc[-1]
+                    
+                    # Calculate indicators
+                    df = calculate_indicators(df)
+                    
+                    # Wyckoff analysis
+                    wyckoff_result = self.wyckoff.analyze(df)
+                    
+                    # SMC analysis
+                    smc_result = self.smc.analyze(df)
+                    
+                    # Pattern detection
+                    patterns = detect_patterns(df)
+                    
+                    # AI analysis
+                    signal = self.ai.analyze(
+                        df=df,
+                        wyckoff=wyckoff_result,
+                        smc=smc_result,
+                        patterns=patterns
+                    )
+                    
+                    # Send result (including WAIT)
+                    self.telegram.send_analysis_result(signal, current_price)
+                    
+                    last_market_analysis = current_time
+                    print(f"✅ Market analysis complete. Next in {LOOP_INTERVAL//60} minutes")
+                
+            except KeyboardInterrupt:
+                print("\n⚠️ Bot stopped by user (Ctrl+C)")
+                break
+            except Exception as e:
+                print(f"❌ Loop error: {e}")
+                time.sleep(ERROR_RETRY_INTERVAL)
+                continue
+            
+            # Calculate next wake time
+            next_signal_check = current_time + timedelta(seconds=SIGNAL_CHECK_INTERVAL)
+            next_analysis = last_market_analysis + timedelta(seconds=LOOP_INTERVAL)
+            
+            print(f"\n{'='*60}")
+            print(f"😴 Sleeping {SIGNAL_CHECK_INTERVAL}s...")
+            print(f"   ⚡ Next signal check: {next_signal_check.strftime('%H:%M:%S')}")
+            print(f"   🎯 Next full analysis: {next_analysis.strftime('%H:%M:%S')}")
+            print(f"{'='*60}")
+            
+            time.sleep(SIGNAL_CHECK_INTERVAL)
         """Vòng lặp phân tích chính"""
         loop_count = 0
         

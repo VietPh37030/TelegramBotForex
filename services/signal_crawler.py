@@ -159,14 +159,17 @@ class SignalCrawler:
                         msg_datetime = datetime.fromisoformat(dt_clean)
                         msg_time_str = msg_datetime.strftime("%H:%M %d/%m/%Y")
                         
-                        # ⚠️ FILTER: Chỉ lấy tin trong 36h gần nhất (buffer for timezone)
-                        time_diff = (now - msg_datetime).total_seconds()
-                        if time_diff > 129600:  # 36 hours (was 24h = 86400s)
+                        # ⚠️ FILTER: Chỉ lấy tin trong CÙNG NGÀY (same day only)
+                        msg_date = msg_datetime.date()
+                        today_date = datetime.now().date()
+                        
+                        if msg_date < today_date:
                             skipped_old += 1
-                            continue  # Skip tin cũ
-                        elif time_diff < 0:
-                            # Tin trong tương lai? (lỗi timezone) - vẫn lấy
-                            pass
+                            continue  # Skip signals from previous days
+                        
+                        # Also skip future dates (timezone issues)
+                        if msg_date > today_date:
+                            continue
                             
                     except Exception as e:
                         # Không parse được datetime -> Skip để an toàn
@@ -290,6 +293,22 @@ LƯU Ý:
             action = 'BUY'
         elif any(word in text_lower for word in ['sell', 'bán', 'short', 'vào lệnh bán']):
             action = 'SELL'
+        
+        # 📸 NEW: If no action but HAS image → Create placeholder for chart analysis
+        if not action and image_url:
+            print(f"   📸 Image-only signal from @{source} - will analyze chart...")
+            return TradingSignal(
+                source=source,
+                timestamp=msg_time_str if msg_time_str else datetime.now().strftime("%H:%M %d/%m/%Y"),
+                symbol='XAUUSD',
+                action='PENDING',  # Will be determined by AI chart analysis
+                entry=0,  # Will be filled by chart analysis
+                stoploss=0,
+                takeprofit=0,
+                status='PENDING',
+                raw_text=text[:200],
+                image_url=image_url
+            )
         
         if not action:
             return None
