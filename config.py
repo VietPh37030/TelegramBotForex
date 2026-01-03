@@ -53,5 +53,5 @@ EMA_SLOW = 200
 ATR_PERIOD = 14
 
 # ============== BOT SETTINGS ==============
-LOOP_INTERVAL = 900  # 15 phút (seconds)
+LOOP_INTERVAL = 3600  # 1 hour (was 900 = 15 min) - Reduced to prevent spam
 ERROR_RETRY_INTERVAL = 60  # Thử lại sau 60s nếu lỗi

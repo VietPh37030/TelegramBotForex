@@ -302,10 +302,10 @@ class WyckoffBot:
                         # Gửi thông báo
                         self._send_news_notification(news)
                         new_news_count += 1
-                    
-                    elif news.impact == 'MEDIUM':
-                        print(f"🟡 MEDIUM NEWS: {news.title[:50]}...")
-                        new_news_count += 1
+                    else:
+                        # Log nhưng không gửi thông báo
+                        impact_emoji = '🟡' if news.impact == 'MEDIUM' else '⚪'
+                        print(f"{impact_emoji} {news.impact} NEWS (not notified): {news.title[:50]}...")
             
             self.last_news_check = datetime.now()
             return new_news_count

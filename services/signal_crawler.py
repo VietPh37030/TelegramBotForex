@@ -159,9 +159,9 @@ class SignalCrawler:
                         msg_datetime = datetime.fromisoformat(dt_clean)
                         msg_time_str = msg_datetime.strftime("%H:%M %d/%m/%Y")
                         
-                        # ⚠️ FILTER: Chỉ lấy tin trong 24h gần nhất
+                        # ⚠️ FILTER: Chỉ lấy tin trong 36h gần nhất (buffer for timezone)
                         time_diff = (now - msg_datetime).total_seconds()
-                        if time_diff > 86400:  # 24 hours = 86400 seconds
+                        if time_diff > 129600:  # 36 hours (was 24h = 86400s)
                             skipped_old += 1
                             continue  # Skip tin cũ
                         elif time_diff < 0:
@@ -275,7 +275,8 @@ LƯU Ý:
                     raw_text=text[:200]
                 )
         except Exception as e:
-            print(f"⚠️ AI parsing error: {e}")
+            print(f"⚠️ AI parsing error for @{source}: {e}")
+            print(f"   Problematic text: {text[:100]}...")
         
         return None
     
