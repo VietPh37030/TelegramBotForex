@@ -345,8 +345,7 @@ class WyckoffBot:
                     self.telegram.bot.send_photo(
                         self.telegram.chat_id,
                         news.image_url,
-                        caption=message,
-                        parse_mode='Markdown'
+                        caption=message
                     )
                     print(f"📸 Đã gửi tin tức kèm ảnh từ @{news.source}")
                     return
@@ -413,8 +412,7 @@ class WyckoffBot:
                     self.telegram.bot.send_photo(
                         self.telegram.chat_id,
                         signal.image_url,
-                        caption=message,
-                        parse_mode='Markdown'
+                        caption=message
                     )
                     print(f"📸 Đã gửi ảnh chart từ @{signal.source}")
                 except Exception as img_err:
