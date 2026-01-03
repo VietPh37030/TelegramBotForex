@@ -51,6 +51,7 @@ from services.risk_manager import RiskManager
 from services.firebase_service import FirebaseService
 from services.news_crawler import NewsCrawler
 from services.signal_crawler import SignalCrawler
+from services.chart_generator import ChartGenerator
 
 
 def display_banner():
@@ -134,11 +135,16 @@ class WyckoffBot:
         self.signal_crawler = SignalCrawler(self.firebase, self.ai)
         print("✅")
         
-        # Track last signal check
+        # 10. Chart Generator
+        print("📈 Initializing Chart Generator...", end=" ")
+        self.chart_gen = ChartGenerator()
+        print("✅")
+        
+        # Track state
         self.last_signal_check = None
-        self.known_signals = set()  # Track đã xử lý signals nào
-        self.known_news = set()  # Track tin tức đã thông báo
-        self.last_news_check = None  # Thời gian check tin tức cuối
+        self.known_signals = set()  # Track signals already processed
+        self.known_news = set()  # Track news already notified
+        self.last_news_check = None  # Last news check time
         
         print("-" * 50)
         print("✅ TẤT CẢ COMPONENTS ĐÃ SẴN SÀNG!\n")
@@ -146,6 +152,7 @@ class WyckoffBot:
     def _setup_telegram_callbacks(self):
         """Thiết lập callbacks cho Telegram commands"""
         self.telegram.on_check_market = self.analyze_market
+        self.telegram.on_get_advice = self.get_decisive_advice  # NEW: Gợi ý vào lệnh
         self.telegram.on_get_status = self.get_status_text
         self.telegram.on_get_history = self.get_history_text
         self.telegram.on_get_news = self.get_news_text
@@ -176,6 +183,123 @@ class WyckoffBot:
 """
         except Exception as e:
             return f"❌ Lỗi crawl tin tức: {str(e)[:100]}"
+    
+    def get_decisive_advice(self) -> str:
+        """
+        Đưa ra gợi ý QUYẾT ĐOÁN vào lệnh - KHÔNG có WAIT
+        User hỏi: "Bây giờ vào lệnh được không?"
+        Bot trả lời: BUY / SELL / NO (không trade)
+        """
+        try:
+            print("\n💡 Getting decisive trading advice...")
+            
+            # Get market data
+            df = self.fetcher.get_candles(n_bars=30, interval='15m')
+            if df is None or df.empty:
+                return "❌ Không lấy được dữ liệu thị trường. Thử lại sau."
+            
+            current_price = df['close'].iloc[-1]
+            
+            # Calculate indicators
+            from services.indicators import calculate_indicators
+            df = calculate_indicators(df)
+            
+            # Wyckoff analysis
+            wyckoff_result = self.wyckoff.analyze(df)
+            
+            # SMC analysis
+            smc_result = self.smc.analyze(df)
+            
+            # Pattern detection
+            from services.patterns import detect_patterns
+            patterns = detect_patterns(df)
+            
+            # Get news
+            important_news = self.news.get_high_impact_news()
+            
+            # AI analysis with FORCED DECISION
+            prompt_override = """
+🎯 QUAN TRỌNG: Bạn PHẢI đưa ra quyết định CỤ THỂ. KHÔNG được trả lời "WAIT".
+
+Chỉ được chọn 1 trong 3:
+1. BUY - Nên vào lệnh LONG ngay
+2. SELL - Nên vào lệnh SHORT ngay  
+3. NO - KHÔNG nên vào lệnh (rủi ro cao, không rõ ràng, hoặc có tin tức quan trọng)
+
+Nếu không chắc chắn → Chọn NO (an toàn hơn)
+"""
+            
+            signal = self.ai.analyze(
+                market_data=self.fetcher.format_for_ai(df),
+                indicators={'price': current_price, 'wyckoff': str(wyckoff_result), 'smc': str(smc_result)},
+                wyckoff_analysis=wyckoff_result,
+                smc_analysis=smc_result,
+                news_context=str([n.event for n in important_news[:3]]),
+                prompt_override=prompt_override
+            )
+            
+            action = signal.get('action', 'NO')
+            confidence = signal.get('confidence', 0)
+            reason = signal.get('reason', 'Không có lý do')
+            
+            # Format response
+            if action == 'BUY':
+                icon = "🟢"
+                decision = "VÀO LỆNH BUY"
+                entry = signal.get('entry', current_price)
+                sl = signal.get('stoploss', 0)
+                tp = signal.get('takeprofit', 0)
+            elif action == 'SELL':
+                icon = "🔴"
+                decision = "VÀO LỆNH SELL"
+                entry = signal.get('entry', current_price)
+                sl = signal.get('stoploss', 0)
+                tp = signal.get('takeprofit', 0)
+            else:
+                icon = "⛔"
+                decision = "KHÔNG VÀO LỆNH"
+                entry = sl = tp = 0
+            
+            response = f"""
+{icon} GỢI Ý TRADING
+━━━━━━━━━━━━━━━━━━
+
+💰 Giá XAU/USD: ${current_price:.2f}
+
+🎯 QUYẾT ĐỊNH: {decision}
+📊 Độ tin cậy: {confidence}%
+
+━━━━━━━━━━━━━━━━━━
+💡 LÝ DO:
+{reason}
+━━━━━━━━━━━━━━━━━━
+"""
+            
+            # Generate chart
+            chart_filename = f"advice_{datetime.now().strftime('%H%M%S')}.png"
+            levels = {'entry': entry, 'sl': sl, 'tp': tp} if action in ['BUY', 'SELL'] else None
+            chart_path = self.chart_gen.generate_chart(df, title=f"XAU/USD {decision}", levels=levels, filename=chart_filename)
+            
+            # Send with chart if exists
+            if chart_path and os.path.exists(chart_path):
+                try:
+                    with open(chart_path, 'rb') as photo:
+                        self.telegram.bot.send_photo(
+                            self.telegram.chat_id,
+                            photo,
+                            caption=response
+                        )
+                    # Cleanup after sending
+                    # os.remove(chart_path) 
+                except Exception as e:
+                    print(f"❌ Error sending chart: {e}")
+                    return response # Return text as fallback
+                return None # Already sent via photo
+            
+            return response
+            
+        except Exception as e:
+            return f"❌ Lỗi phân tích: {str(e)[:100]}"
     
     def check_external_signals(self):
         """
@@ -557,6 +681,27 @@ class WyckoffBot:
             # Log
             print(f"✅ Analysis complete: {signal.get('action', 'WAIT')}")
             
+            # 11. Generate Chart Image
+            try:
+                levels = {
+                    'entry': signal.get('entry'),
+                    'sl': signal.get('stoploss'),
+                    'tp': signal.get('takeprofit')
+                } if signal.get('action') in ['BUY', 'SELL'] else None
+                
+                chart_path = self.chart_gen.generate_chart(
+                    df, 
+                    title=f"XAU/USD {signal.get('action')}", 
+                    levels=levels
+                )
+                if chart_path:
+                    signal['chart_path'] = chart_path
+            except Exception as chart_err:
+                print(f"⚠️ Chart error: {chart_err}")
+            
+            # Add current price for display
+            signal['current_price'] = df['close'].iloc[-1] if not df.empty else 0
+            
             return signal
             
         except Exception as e:
@@ -670,6 +815,15 @@ class WyckoffBot:
                 time.sleep(SIGNAL_CHECK_INTERVAL)
                 continue
             
+            # 🛑 Skip on weekends (Sat=5, Sun=6) - Forex market closed
+            if current_time.weekday() >= 5:
+                if loop_count == 1:  # Only notify once
+                    day_name = "Thứ 7" if current_time.weekday() == 5 else "Chủ Nhật"
+                    self.telegram.send_message(f"🌙 Hôm nay là {day_name} - Thị trường Forex đóng cửa!\n\n⏰ Bot sẽ tự động hoạt động lại vào Thứ 2.\n\n💤 Nghỉ ngơi thôi!")
+                print("🌙 Thị trường đóng cửa (Cuối tuần). Nghỉ ngơi...")
+                time.sleep(3600)  # Sleep 1 hour on weekends
+                continue
+            
             try:
                 # Check daily limit
                 can_trade, limit_msg = self.risk_mgr.check_daily_limit()
@@ -736,14 +890,18 @@ class WyckoffBot:
                     
                     # AI analysis
                     signal = self.ai.analyze(
-                        df=df,
-                        wyckoff=wyckoff_result,
-                        smc=smc_result,
-                        patterns=patterns
+                        market_data=self.fetcher.format_for_ai(df),
+                        indicators={'price': current_price},
+                        wyckoff_analysis=wyckoff_result,
+                        smc_analysis=smc_result
                     )
                     
-                    # Send result (including WAIT)
-                    self.telegram.send_analysis_result(signal, current_price)
+                    # Only send notification for BUY/SELL (reduce WAIT spam)
+                    if signal.get('action') in ['BUY', 'SELL']:
+                        self.telegram.send_analysis_result(signal, current_price)
+                        print(f"📤 Sent {signal.get('action')} notification to Telegram")
+                    else:
+                        print(f"⏸️ Action: {signal.get('action')} - Skipping notification")
                     
                     last_market_analysis = current_time
                     print(f"✅ Market analysis complete. Next in {LOOP_INTERVAL//60} minutes")

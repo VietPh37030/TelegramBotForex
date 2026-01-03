@@ -17,6 +17,7 @@ class TelegramCommandBot:
     COMMANDS = {
         'start': '🚀 Khởi động và xem hướng dẫn',
         'check': '🔍 Phân tích thị trường NGAY LẬP TỨC',
+        'goiy': '💡 Gợi ý vào lệnh (BUY/SELL/NO - Không WAIT)',
         'von': '💰 Cập nhật vốn (VD: /von 1000)',
         'risk': '⚠️ Chỉnh % rủi ro (VD: /risk 2)',
         'mode': '⚙️ Chỉnh chế độ (Scalping/Swing)',
@@ -45,6 +46,7 @@ class TelegramCommandBot:
         
         # Callbacks cho các actions
         self.on_check_market: Optional[Callable] = None
+        self.on_get_advice: Optional[Callable] = None  # Gợi ý vào lệnh
         self.on_get_status: Optional[Callable] = None
         self.on_get_history: Optional[Callable] = None
         self.on_get_tintuc: Optional[Callable] = None  # Tin tức tiếng Việt
@@ -73,6 +75,10 @@ class TelegramCommandBot:
         @self.bot.message_handler(commands=['check'])
         def handle_check(message):
             self._cmd_check(message)
+        
+        @self.bot.message_handler(commands=['goiy'])
+        def handle_goiy(message):
+            self._cmd_goiy(message)
         
         @self.bot.message_handler(commands=['von'])
         def handle_von(message):
@@ -153,6 +159,7 @@ Chào mừng bạn đến với hệ thống giao dịch XAU/USD thông minh!
 ━━━━━━━━━━━━━━━━━━━━━
 
 /check - 🔍 Phân tích thị trường NGAY
+/goiy - 💡 Gợi ý vào lệnh (BUY/SELL/NO)
 /von <số> - 💰 Cập nhật vốn (VD: /von 1000)
 /risk <số> - ⚠️ % rủi ro (VD: /risk 2)
 /mode - ⚙️ Đổi chế độ Scalping/Swing
@@ -184,13 +191,32 @@ Chào mừng bạn đến với hệ thống giao dịch XAU/USD thông minh!
             try:
                 result = self.on_check_market()
                 if result:
-                    self.send_wyckoff_signal(result)
+                    # Use send_analysis_result which supports charts
+                    price = result.get('current_price', 0)
+                    self.send_analysis_result(result, price, message.chat.id)
                 else:
                     self._send_message("❌ Không thể phân tích. Thử lại sau.", message.chat.id)
             except Exception as e:
                 self._send_message(f"❌ Lỗi: {str(e)[:100]}", message.chat.id)
         else:
             self._send_message("⚠️ Chức năng phân tích chưa được kết nối.", message.chat.id)
+    
+    def _cmd_goiy(self, message):
+        """Handler cho /goiy - Gợi ý vào lệnh (BUY/SELL/NO only, NO WAIT)"""
+        self._send_message("💡 AI đang phân tích để đưa ra gợi ý...\n⏳ Vui lòng chờ...", message.chat.id)
+        
+        if self.on_get_advice:
+            try:
+                result = self.on_get_advice()
+                # If result is None, it might have been sent as a photo already
+                if result:
+                    self._send_message(result, message.chat.id)
+                elif result is False:
+                    self._send_message("❌ Không thể đưa ra gợi ý. Thử lại sau.", message.chat.id)
+            except Exception as e:
+                self._send_message(f"❌ Lỗi: {str(e)[:100]}", message.chat.id)
+        else:
+            self._send_message("⚠️ Chức năng gợi ý chưa được kết nối.", message.chat.id)
     
     def _cmd_von(self, message):
         """Handler cho /von - Cập nhật vốn"""
@@ -432,9 +458,9 @@ Sử dụng /stop để tiếp tục sau khi tin qua.
         # Auto pause
         self.is_paused = True
     
-    def send_analysis_result(self, signal: Dict, price: float = None):
+    def send_analysis_result(self, signal: Dict, price: float = None, chat_id: str = None):
         """
-        Gửi kết quả phân tích (kể cả WAIT) về Telegram
+        Gửi kết quả phân tích (kể cả WAIT) về Telegram kèm chart nếu có
         """
         action = signal.get('action', 'WAIT')
         confidence = signal.get('confidence', 0)
@@ -476,7 +502,23 @@ Sử dụng /stop để tiếp tục sau khi tin qua.
 ━━━━━━━━━━━━━━━━━━━━━
 ⏰ {datetime.now().strftime('%H:%M:%S %d/%m/%Y')}
 """
-        self._send_message(msg)
+        
+        # 📸 Gửi ảnh chart nếu có
+        chart_path = signal.get('chart_path')
+        if chart_path and os.path.exists(chart_path):
+            try:
+                with open(chart_path, 'rb') as photo:
+                    self.bot.send_photo(
+                        chat_id or self.chat_id,
+                        photo,
+                        caption=msg
+                    )
+                return # Đã gửi kèm ảnh
+            except Exception as e:
+                print(f"⚠️ Error sending chart photo: {e}")
+        
+        # Fallback hoặc nếu không có ảnh thì gửi text
+        self._send_message(msg, chat_id)
     
     def send_message(self, text: str, chat_id: str = None):
         """Gửi tin nhắn - Public method"""
